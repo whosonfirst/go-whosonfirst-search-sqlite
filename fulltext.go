@@ -9,11 +9,12 @@ import (
 	"github.com/whosonfirst/go-whosonfirst-search/fulltext"
 	wof_spr "github.com/whosonfirst/go-whosonfirst-spr"
 	wof_sqlite "github.com/whosonfirst/go-whosonfirst-sqlite"
-	"github.com/whosonfirst/go-whosonfirst-sqlite-spr"	
 	"github.com/whosonfirst/go-whosonfirst-sqlite-features/tables"
+	"github.com/whosonfirst/go-whosonfirst-sqlite-spr"
 	wof_database "github.com/whosonfirst/go-whosonfirst-sqlite/database"
 	_ "log"
 	"net/url"
+	"sort"
 	"sync"
 )
 
@@ -108,9 +109,9 @@ func (ftdb *SQLiteFullTextDatabase) QueryString(ctx context.Context, term string
 		return nil, err
 	}
 
-	q := fmt.Sprintf("SELECT id FROM %s WHERE names_all MATCH ?", ftdb.search_table.Name())
+	q := fmt.Sprintf("SELECT id FROM %s WHERE names_all MATCH ? OR id MATCH ?", ftdb.search_table.Name())
 
-	rows, err := conn.QueryContext(ctx, q, term)
+	rows, err := conn.QueryContext(ctx, q, term, term)
 
 	if err != nil {
 		return nil, err
@@ -121,13 +122,19 @@ func (ftdb *SQLiteFullTextDatabase) QueryString(ctx context.Context, term string
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	type SPRResult struct {
+		Index int
+		SPR   wof_spr.StandardPlacesResult
+	}
+
 	done_ch := make(chan bool)
 	err_ch := make(chan error)
-	spr_ch := make(chan wof_spr.StandardPlacesResult)
+	spr_ch := make(chan SPRResult)
 
-	spr_results := make([]wof_spr.StandardPlacesResult, 0)
+	spr_results := make(map[int]wof_spr.StandardPlacesResult)
 
 	remaining := 0
+	idx := 0
 
 	for rows.Next() {
 
@@ -141,7 +148,7 @@ func (ftdb *SQLiteFullTextDatabase) QueryString(ctx context.Context, term string
 
 		remaining += 1
 
-		go func(id int64) {
+		go func(idx int, id int64) {
 
 			defer func() {
 				done_ch <- true
@@ -161,9 +168,14 @@ func (ftdb *SQLiteFullTextDatabase) QueryString(ctx context.Context, term string
 				return
 			}
 
-			spr_ch <- spr_r
+			spr_ch <- SPRResult{
+				Index: idx,
+				SPR:   spr_r,
+			}
 
-		}(id)
+		}(idx, id)
+
+		idx += 1
 	}
 
 	for remaining > 0 {
@@ -173,12 +185,26 @@ func (ftdb *SQLiteFullTextDatabase) QueryString(ctx context.Context, term string
 		case err := <-err_ch:
 			return nil, err
 		case spr_r := <-spr_ch:
-			spr_results = append(spr_results, spr_r)
+			spr_results[spr_r.Index] = spr_r.SPR
 		}
 	}
 
+	indices := make([]int, 0)
+
+	for i, _ := range spr_results {
+		indices = append(indices, i)
+	}
+
+	sort.Ints(indices)
+
+	sorted := make([]wof_spr.StandardPlacesResult, len(indices))
+
+	for idx, i := range indices {
+		sorted[idx] = spr_results[i]
+	}
+
 	r := &spr.SQLiteResults{
-		Places: spr_results,
+		Places: sorted,
 	}
 
 	return r, nil
