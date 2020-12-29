@@ -14,7 +14,7 @@ import (
 	"github.com/whosonfirst/go-whosonfirst-sqlite-features/tables"
 	wof_database "github.com/whosonfirst/go-whosonfirst-sqlite/database"
 	"github.com/whosonfirst/go-whosonfirst-uri"
-	"log"
+	_ "log"
 	"net/url"
 	"sync"
 )
@@ -120,6 +120,9 @@ func (ftdb *SQLiteFullTextDatabase) QueryString(ctx context.Context, term string
 
 	defer rows.Close()
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	done_ch := make(chan bool)
 	err_ch := make(chan error)
 	spr_ch := make(chan spr.StandardPlacesResult)
@@ -163,8 +166,6 @@ func (ftdb *SQLiteFullTextDatabase) QueryString(ctx context.Context, term string
 			spr_ch <- spr_r
 
 		}(id)
-
-		log.Println("RES", q, id)
 	}
 
 	for remaining > 0 {
