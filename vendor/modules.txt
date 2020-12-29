@@ -55,5 +55,7 @@ github.com/whosonfirst/go-whosonfirst-sqlite/utils
 # github.com/whosonfirst/go-whosonfirst-sqlite-features v0.6.4
 github.com/whosonfirst/go-whosonfirst-sqlite-features
 github.com/whosonfirst/go-whosonfirst-sqlite-features/tables
+# github.com/whosonfirst/go-whosonfirst-sqlite-spr v0.0.0-20201229014817-97ed4ba67a5a
+github.com/whosonfirst/go-whosonfirst-sqlite-spr
 # github.com/whosonfirst/go-whosonfirst-uri v0.2.0
 github.com/whosonfirst/go-whosonfirst-uri

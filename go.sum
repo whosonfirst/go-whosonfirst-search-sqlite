@@ -105,6 +105,8 @@ github.com/whosonfirst/go-whosonfirst-sqlite v0.1.6 h1:XhAlLoPm7y/4565du5H7R5Swj
 github.com/whosonfirst/go-whosonfirst-sqlite v0.1.6/go.mod h1:eH96/QgSzLBXxYG7WtmRy22eznTfgfcJhsHZVjbIZ68=
 github.com/whosonfirst/go-whosonfirst-sqlite-features v0.6.4 h1:NbeWWoS9lhVTDNgqmbOInw2ugAOXuIn4XoUSidv9OSs=
 github.com/whosonfirst/go-whosonfirst-sqlite-features v0.6.4/go.mod h1:jZXXBBarIOYmkFl/LiKPjE4dQEunUZjV4fGqQImnXYQ=
+github.com/whosonfirst/go-whosonfirst-sqlite-spr v0.0.0-20201229014817-97ed4ba67a5a h1:2KFNx7rPKAUMFeqSgNYhZ+cpUqrOfaFYbK30ehVRNaA=
+github.com/whosonfirst/go-whosonfirst-sqlite-spr v0.0.0-20201229014817-97ed4ba67a5a/go.mod h1:yOyNF+J1t0xmRa//SxYI4MOYSRYTGgUp4eOCk4JWKm8=
 github.com/whosonfirst/go-whosonfirst-uri v0.2.0 h1:iODHdyvW+8IXqHZTixZ/9GEZy1dVKGj6dMRg7fn0d2M=
 github.com/whosonfirst/go-whosonfirst-uri v0.2.0/go.mod h1:8eaDVcc4v+HHHEDaRbApdmhPwM4/JQllw2PktvZcPVs=
 github.com/whosonfirst/walk v0.0.1/go.mod h1:1KtP/VeooSlFOI61p+THc/C16Ra8Z5MjpjI0tsd3c1M=
