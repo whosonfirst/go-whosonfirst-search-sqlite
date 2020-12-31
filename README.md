@@ -1,8 +1,14 @@
 # go-whosonfirst-search-sqlite
 
-## Important
+Go package that implements Who's On First fulltext search interface with a SQLite database.
 
-This is work in progress.
+## Description
+
+`go-whosonfirst-search-sqlite` is a Go package that implementing Who's On First fulltext search interface with a SQLite database, specifically a SQLite database with Who's On First records indexed in [go-whosonfirst-sqlite-features](https://github.com/whosonfirst/go-whosonfirst-sqlite-features) `search` and `spr` tables.
+
+### Important
+
+This is work in progress. Documentation to follow.
 
 ## Tools
 
@@ -55,3 +61,4 @@ $> bin/wof-sqlite-index-features \
 
 * https://github.com/whosonfirst/go-whosonfirst-search
 * https://github.com/whosonfirst/go-whosonfirst-sqlite-features
+* https://github.com/whosonfirst/go-whosonfirst-sqlite-features-index
