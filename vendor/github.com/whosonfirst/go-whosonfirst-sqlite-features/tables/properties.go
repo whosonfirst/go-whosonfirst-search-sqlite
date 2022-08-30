@@ -1,13 +1,13 @@
 package tables
 
 import (
+	"context"
 	"fmt"
+	"github.com/aaronland/go-sqlite"
 	"github.com/tidwall/gjson"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2/properties/whosonfirst"
-	"github.com/whosonfirst/go-whosonfirst-sqlite"
+	"github.com/whosonfirst/go-whosonfirst-feature/alt"
+	"github.com/whosonfirst/go-whosonfirst-feature/properties"
 	"github.com/whosonfirst/go-whosonfirst-sqlite-features"
-	"github.com/whosonfirst/go-whosonfirst-sqlite/utils"
 )
 
 type PropertiesTableOptions struct {
@@ -35,7 +35,7 @@ type PropertiesRow struct {
 	LastModified int64
 }
 
-func NewPropertiesTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
+func NewPropertiesTableWithDatabase(ctx context.Context, db sqlite.Database) (sqlite.Table, error) {
 
 	opts, err := DefaultPropertiesTableOptions()
 
@@ -43,27 +43,27 @@ func NewPropertiesTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
 		return nil, err
 	}
 
-	return NewPropertiesTableWithDatabaseAndOptions(db, opts)
+	return NewPropertiesTableWithDatabaseAndOptions(ctx, db, opts)
 }
 
-func NewPropertiesTableWithDatabaseAndOptions(db sqlite.Database, opts *PropertiesTableOptions) (sqlite.Table, error) {
+func NewPropertiesTableWithDatabaseAndOptions(ctx context.Context, db sqlite.Database, opts *PropertiesTableOptions) (sqlite.Table, error) {
 
-	t, err := NewPropertiesTableWithOptions(opts)
+	t, err := NewPropertiesTableWithOptions(ctx, opts)
 
 	if err != nil {
 		return nil, err
 	}
 
-	err = t.InitializeTable(db)
+	err = t.InitializeTable(ctx, db)
 
 	if err != nil {
-		return nil, err
+		return nil, InitializeTableError(t, err)
 	}
 
 	return t, nil
 }
 
-func NewPropertiesTable() (sqlite.Table, error) {
+func NewPropertiesTable(ctx context.Context) (sqlite.Table, error) {
 
 	opts, err := DefaultPropertiesTableOptions()
 
@@ -71,10 +71,10 @@ func NewPropertiesTable() (sqlite.Table, error) {
 		return nil, err
 	}
 
-	return NewPropertiesTableWithOptions(opts)
+	return NewPropertiesTableWithOptions(ctx, opts)
 }
 
-func NewPropertiesTableWithOptions(opts *PropertiesTableOptions) (sqlite.Table, error) {
+func NewPropertiesTableWithOptions(ctx context.Context, opts *PropertiesTableOptions) (sqlite.Table, error) {
 
 	t := PropertiesTable{
 		name:    "properties",
@@ -106,38 +106,47 @@ func (t *PropertiesTable) Schema() string {
 	return fmt.Sprintf(sql, t.Name(), t.Name(), t.Name(), t.Name())
 }
 
-func (t *PropertiesTable) InitializeTable(db sqlite.Database) error {
+func (t *PropertiesTable) InitializeTable(ctx context.Context, db sqlite.Database) error {
 
-	return utils.CreateTableIfNecessary(db, t)
+	return sqlite.CreateTableIfNecessary(ctx, db, t)
 }
 
-func (t *PropertiesTable) IndexRecord(db sqlite.Database, i interface{}) error {
-	return t.IndexFeature(db, i.(geojson.Feature))
+func (t *PropertiesTable) IndexRecord(ctx context.Context, db sqlite.Database, i interface{}) error {
+	return t.IndexFeature(ctx, db, i.([]byte))
 }
 
-func (t *PropertiesTable) IndexFeature(db sqlite.Database, f geojson.Feature) error {
+func (t *PropertiesTable) IndexFeature(ctx context.Context, db sqlite.Database, f []byte) error {
 
-	conn, err := db.Conn()
-
-	if err != nil {
-		return err
-	}
-
-	str_id := f.Id()
-
-	is_alt := whosonfirst.IsAlt(f)
-	alt_label := whosonfirst.AltLabel(f)
+	is_alt := alt.IsAlt(f)
 
 	if is_alt && !t.options.IndexAltFiles {
 		return nil
 	}
 
-	lastmod := whosonfirst.LastModified(f)
+	id, err := properties.Id(f)
+
+	if err != nil {
+		return MissingPropertyError(t, "id", err)
+	}
+
+	alt_label, err := properties.AltLabel(f)
+
+	if err != nil {
+		return MissingPropertyError(t, "alt label", err)
+	}
+
+	lastmod := properties.LastModified(f)
+
+	conn, err := db.Conn()
+
+	if err != nil {
+		return DatabaseConnectionError(t, err)
+	}
 
 	tx, err := conn.Begin()
 
 	if err != nil {
-		return err
+		return BeginTransactionError(t, err)
 	}
 
 	sql := fmt.Sprintf(`INSERT OR REPLACE INTO %s (
@@ -149,19 +158,25 @@ func (t *PropertiesTable) IndexFeature(db sqlite.Database, f geojson.Feature) er
 	stmt, err := tx.Prepare(sql)
 
 	if err != nil {
-		return err
+		return PrepareStatementError(t, err)
 	}
 
 	defer stmt.Close()
 
-	rsp_props := gjson.GetBytes(f.Bytes(), "properties")
+	rsp_props := gjson.GetBytes(f, "properties")
 	str_props := rsp_props.String()
 
-	_, err = stmt.Exec(str_id, str_props, is_alt, alt_label, lastmod)
+	_, err = stmt.Exec(id, str_props, is_alt, alt_label, lastmod)
 
 	if err != nil {
-		return err
+		return ExecuteStatementError(t, err)
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+
+	if err != nil {
+		return CommitTransactionError(t, err)
+	}
+
+	return nil
 }

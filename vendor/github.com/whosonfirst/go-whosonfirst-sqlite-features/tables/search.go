@@ -1,13 +1,13 @@
 package tables
 
 import (
+	"context"
 	"fmt"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2/properties/whosonfirst"
+	"github.com/aaronland/go-sqlite"
+	"github.com/whosonfirst/go-whosonfirst-feature/alt"
+	"github.com/whosonfirst/go-whosonfirst-feature/properties"
 	"github.com/whosonfirst/go-whosonfirst-names/tags"
-	"github.com/whosonfirst/go-whosonfirst-sqlite"
 	"github.com/whosonfirst/go-whosonfirst-sqlite-features"
-	"github.com/whosonfirst/go-whosonfirst-sqlite/utils"
 	_ "log"
 	"strings"
 )
@@ -17,15 +17,15 @@ type SearchTable struct {
 	name string
 }
 
-func NewSearchTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
+func NewSearchTableWithDatabase(ctx context.Context, db sqlite.Database) (sqlite.Table, error) {
 
-	t, err := NewSearchTable()
+	t, err := NewSearchTable(ctx)
 
 	if err != nil {
 		return nil, err
 	}
 
-	err = t.InitializeTable(db)
+	err = t.InitializeTable(ctx, db)
 
 	if err != nil {
 		return nil, err
@@ -34,7 +34,7 @@ func NewSearchTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
 	return t, nil
 }
 
-func NewSearchTable() (sqlite.Table, error) {
+func NewSearchTable(ctx context.Context) (sqlite.Table, error) {
 
 	t := SearchTable{
 		name: "search",
@@ -43,9 +43,9 @@ func NewSearchTable() (sqlite.Table, error) {
 	return &t, nil
 }
 
-func (t *SearchTable) InitializeTable(db sqlite.Database) error {
+func (t *SearchTable) InitializeTable(ctx context.Context, db sqlite.Database) error {
 
-	return utils.CreateTableIfNecessary(db, t)
+	return sqlite.CreateTableIfNecessary(ctx, db, t)
 }
 
 func (t *SearchTable) Name() string {
@@ -64,40 +64,50 @@ func (t *SearchTable) Schema() string {
 	return fmt.Sprintf(schema, t.Name())
 }
 
-func (t *SearchTable) IndexRecord(db sqlite.Database, i interface{}) error {
-	return t.IndexFeature(db, i.(geojson.Feature))
+func (t *SearchTable) IndexRecord(ctx context.Context, db sqlite.Database, i interface{}) error {
+	return t.IndexFeature(ctx, db, i.([]byte))
 }
 
-func (t *SearchTable) IndexFeature(db sqlite.Database, f geojson.Feature) error {
+func (t *SearchTable) IndexFeature(ctx context.Context, db sqlite.Database, f []byte) error {
 
-	is_alt := whosonfirst.IsAlt(f)
-
-	if is_alt {
+	if alt.IsAlt(f) {
 		return nil
 	}
 
-	is_current, err := whosonfirst.IsCurrent(f)
+	id, err := properties.Id(f)
 
 	if err != nil {
-		return err
+		return MissingPropertyError(t, "id", err)
 	}
 
-	is_ceased, err := whosonfirst.IsCeased(f)
+	placetype, err := properties.Placetype(f)
 
 	if err != nil {
-		return err
+		return MissingPropertyError(t, "placetype", err)
 	}
 
-	is_deprecated, err := whosonfirst.IsDeprecated(f)
+	is_current, err := properties.IsCurrent(f)
 
 	if err != nil {
-		return err
+		return MissingPropertyError(t, "is current", err)
 	}
 
-	is_superseded, err := whosonfirst.IsSuperseded(f)
+	is_ceased, err := properties.IsCeased(f)
 
 	if err != nil {
-		return err
+		return MissingPropertyError(t, "is ceased", err)
+	}
+
+	is_deprecated, err := properties.IsDeprecated(f)
+
+	if err != nil {
+		return MissingPropertyError(t, "is deprecated", err)
+	}
+
+	is_superseded, err := properties.IsSuperseded(f)
+
+	if err != nil {
+		return MissingPropertyError(t, "is superseded", err)
 	}
 
 	names_all := make([]string, 0)
@@ -105,12 +115,21 @@ func (t *SearchTable) IndexFeature(db sqlite.Database, f geojson.Feature) error 
 	names_variant := make([]string, 0)
 	names_colloquial := make([]string, 0)
 
-	for tag, names := range whosonfirst.Names(f) {
+	name, err := properties.Name(f)
+
+	if err != nil {
+		return MissingPropertyError(t, "name", err)
+	}
+
+	names_all = append(names_all, name)
+	names_preferred = append(names_preferred, name)
+
+	for tag, names := range properties.Names(f) {
 
 		lt, err := tags.NewLangTag(tag)
 
 		if err != nil {
-			return err
+			return WrapError(t, fmt.Errorf("Failed to create new lang tag for '%s', %w", tag, err))
 		}
 
 		possible := make([]string, 0)
@@ -162,41 +181,41 @@ func (t *SearchTable) IndexFeature(db sqlite.Database, f geojson.Feature) error 
 		)`, t.Name()) // ON CONFLICT DO BLAH BLAH BLAH
 
 	args := []interface{}{
-		f.Id(), f.Placetype(),
-		f.Name(), strings.Join(names_all, " "), strings.Join(names_preferred, " "), strings.Join(names_variant, " "), strings.Join(names_colloquial, " "),
+		id, placetype,
+		name, strings.Join(names_all, " "), strings.Join(names_preferred, " "), strings.Join(names_variant, " "), strings.Join(names_colloquial, " "),
 		is_current.Flag(), is_ceased.Flag(), is_deprecated.Flag(), is_superseded.Flag(),
 	}
 
 	conn, err := db.Conn()
 
 	if err != nil {
-		return err
+		return DatabaseConnectionError(t, err)
 	}
 
 	tx, err := conn.Begin()
 
 	if err != nil {
-		return err
+		return BeginTransactionError(t, err)
 	}
 
 	s, err := tx.Prepare(fmt.Sprintf("DELETE FROM %s WHERE id = ?", t.Name()))
 
 	if err != nil {
-		return err
+		return PrepareStatementError(t, err)
 	}
 
 	defer s.Close()
 
-	_, err = s.Exec(f.Id())
+	_, err = s.Exec(id)
 
 	if err != nil {
-		return err
+		return ExecuteStatementError(t, err)
 	}
 
 	stmt, err := tx.Prepare(sql)
 
 	if err != nil {
-		return err
+		return PrepareStatementError(t, err)
 	}
 
 	defer stmt.Close()
@@ -204,8 +223,14 @@ func (t *SearchTable) IndexFeature(db sqlite.Database, f geojson.Feature) error 
 	_, err = stmt.Exec(args...)
 
 	if err != nil {
-		return err
+		return ExecuteStatementError(t, err)
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+
+	if err != nil {
+		return CommitTransactionError(t, err)
+	}
+
+	return nil
 }

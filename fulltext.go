@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	wof_geojson "github.com/whosonfirst/go-whosonfirst-geojson-v2"
 	"github.com/whosonfirst/go-whosonfirst-search/filter"
 	"github.com/whosonfirst/go-whosonfirst-search/fulltext"
-	wof_spr "github.com/whosonfirst/go-whosonfirst-spr"
-	wof_sqlite "github.com/whosonfirst/go-whosonfirst-sqlite"
+	wof_spr "github.com/whosonfirst/go-whosonfirst-spr/v2"
+	aa_sqlite "github.com/aaronland/go-sqlite"
 	"github.com/whosonfirst/go-whosonfirst-sqlite-features/tables"
 	"github.com/whosonfirst/go-whosonfirst-sqlite-spr"
-	wof_database "github.com/whosonfirst/go-whosonfirst-sqlite/database"
+	aa_database "github.com/aaronland/go-sqlite/database"
 	_ "log"
 	"net/url"
 	"sort"
@@ -20,9 +19,9 @@ import (
 
 type SQLiteFullTextDatabase struct {
 	fulltext.FullTextDatabase
-	db           *wof_database.SQLiteDatabase
-	spr_table    wof_sqlite.Table
-	search_table wof_sqlite.Table
+	db           *aa_database.SQLiteDatabase
+	spr_table    aa_sqlite.Table
+	search_table aa_sqlite.Table
 	mu           *sync.RWMutex
 }
 
@@ -47,19 +46,19 @@ func NewSQLiteFullTextDatabase(ctx context.Context, str_uri string) (fulltext.Fu
 		return nil, errors.New("Missing 'dsn' parameter")
 	}
 
-	sqlite_db, err := wof_database.NewDB(dsn)
+	sqlite_db, err := aa_database.NewDB(ctx, dsn)
 
 	if err != nil {
 		return nil, err
 	}
 
-	search_table, err := tables.NewSearchTableWithDatabase(sqlite_db)
+	search_table, err := tables.NewSearchTableWithDatabase(ctx, sqlite_db)
 
 	if err != nil {
 		return nil, err
 	}
 
-	spr_table, err := tables.NewSPRTableWithDatabase(sqlite_db)
+	spr_table, err := tables.NewSPRTableWithDatabase(ctx, sqlite_db)
 
 	if err != nil {
 		return nil, err
@@ -81,18 +80,18 @@ func (ftdb *SQLiteFullTextDatabase) Close(ctx context.Context) error {
 	return ftdb.db.Close()
 }
 
-func (ftdb *SQLiteFullTextDatabase) IndexFeature(ctx context.Context, f wof_geojson.Feature) error {
+func (ftdb *SQLiteFullTextDatabase) IndexFeature(ctx context.Context, f []byte) error {
 
 	ftdb.mu.Lock()
 	defer ftdb.mu.Unlock()
 
-	err := ftdb.search_table.IndexRecord(ftdb.db, f)
+	err := ftdb.search_table.IndexRecord(ctx, ftdb.db, f)
 
 	if err != nil {
 		return err
 	}
 
-	err = ftdb.spr_table.IndexRecord(ftdb.db, f)
+	err = ftdb.spr_table.IndexRecord(ctx, ftdb.db, f)
 
 	if err != nil {
 		return err

@@ -1,14 +1,16 @@
 package tables
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2/properties/whosonfirst"
-	"github.com/whosonfirst/go-whosonfirst-sqlite"
+	"github.com/aaronland/go-sqlite"
+	"github.com/whosonfirst/go-whosonfirst-feature/alt"
+	"github.com/whosonfirst/go-whosonfirst-feature/properties"
+	"github.com/whosonfirst/go-whosonfirst-spr/v2"
 	"github.com/whosonfirst/go-whosonfirst-sqlite-features"
-	"github.com/whosonfirst/go-whosonfirst-sqlite/utils"
 	_ "log"
+	"strconv"
+	"strings"
 )
 
 type SPRTableOptions struct {
@@ -30,32 +32,7 @@ type SPRTable struct {
 	options *SPRTableOptions
 }
 
-type SPRRow struct {
-	Id            int64   // properties.wof:id	INTEGER
-	ParentId      int64   // properties.wof:parent_id	INTEGER
-	Name          string  // properties.wof:name  TEXT
-	Placetype     string  // properties.wof:placetype TEXT
-	Country       string  // properties.wof:country TEXT
-	Repo          string  // properties.wof:repo TEXT
-	Path          string  // derived TEXT
-	URI           string  // derived TEXT
-	Latitude      float64 // derived REAL
-	Longitude     float64 // derived REAL
-	MinLatitude   float64 // properties.geom:bbox.1 REAL
-	MinLongitude  float64 // properties.geom:bbox.0 REAL
-	MaxLatitude   float64 // properties.geom:bbox.3 REAL
-	MaxLongitude  float64 // properties.geom.bbox.2 REAL
-	IsCurrent     int64   // properies.mz:is_current INTEGER
-	IsCeased      int64   // derived INTEGER
-	IsDeprecated  int64   // derived INTEGER
-	IsSuperseded  int64   // derived INTEGER
-	IsSuperseding int64   // derived INTEGER
-	SupersededBy  []int64 // ...
-	Supersedes    []int64 // ...
-	LastModified  int64   // properties.wof:lastmodified INTEGER
-}
-
-func NewSPRTable() (sqlite.Table, error) {
+func NewSPRTable(ctx context.Context) (sqlite.Table, error) {
 
 	opts, err := DefaultSPRTableOptions()
 
@@ -63,10 +40,10 @@ func NewSPRTable() (sqlite.Table, error) {
 		return nil, err
 	}
 
-	return NewSPRTableWithOptions(opts)
+	return NewSPRTableWithOptions(ctx, opts)
 }
 
-func NewSPRTableWithOptions(opts *SPRTableOptions) (sqlite.Table, error) {
+func NewSPRTableWithOptions(ctx context.Context, opts *SPRTableOptions) (sqlite.Table, error) {
 
 	t := SPRTable{
 		name:    "spr",
@@ -76,7 +53,7 @@ func NewSPRTableWithOptions(opts *SPRTableOptions) (sqlite.Table, error) {
 	return &t, nil
 }
 
-func NewSPRTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
+func NewSPRTableWithDatabase(ctx context.Context, db sqlite.Database) (sqlite.Table, error) {
 
 	opts, err := DefaultSPRTableOptions()
 
@@ -84,18 +61,18 @@ func NewSPRTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
 		return nil, err
 	}
 
-	return NewSPRTableWithDatabaseAndOptions(db, opts)
+	return NewSPRTableWithDatabaseAndOptions(ctx, db, opts)
 }
 
-func NewSPRTableWithDatabaseAndOptions(db sqlite.Database, opts *SPRTableOptions) (sqlite.Table, error) {
+func NewSPRTableWithDatabaseAndOptions(ctx context.Context, db sqlite.Database, opts *SPRTableOptions) (sqlite.Table, error) {
 
-	t, err := NewSPRTableWithOptions(opts)
+	t, err := NewSPRTableWithOptions(ctx, opts)
 
 	if err != nil {
 		return nil, err
 	}
 
-	err = t.InitializeTable(db)
+	err = t.InitializeTable(ctx, db)
 
 	if err != nil {
 		return nil, err
@@ -104,9 +81,9 @@ func NewSPRTableWithDatabaseAndOptions(db sqlite.Database, opts *SPRTableOptions
 	return t, nil
 }
 
-func (t *SPRTable) InitializeTable(db sqlite.Database) error {
+func (t *SPRTable) InitializeTable(ctx context.Context, db sqlite.Database) error {
 
-	return utils.CreateTableIfNecessary(db, t)
+	return sqlite.CreateTableIfNecessary(ctx, db, t)
 }
 
 func (t *SPRTable) Name() string {
@@ -116,10 +93,12 @@ func (t *SPRTable) Name() string {
 func (t *SPRTable) Schema() string {
 
 	sql := `CREATE TABLE %[1]s (
-			id INTEGER NOT NULL,
+			id TEXT NOT NULL,
 			parent_id INTEGER,
 			name TEXT,
 			placetype TEXT,
+			inception TEXT,
+			cessation TEXT,
 			country TEXT,
 			repo TEXT,
 			latitude REAL,
@@ -135,6 +114,7 @@ func (t *SPRTable) Schema() string {
 			is_superseding INTEGER,
 			superseded_by TEXT,
 			supersedes TEXT,
+			belongsto TEXT,
 			is_alt TINYINT,
 			alt_label TEXT,
 			lastmodified INTEGER
@@ -160,41 +140,61 @@ func (t *SPRTable) Schema() string {
 	return fmt.Sprintf(sql, t.Name())
 }
 
-func (t *SPRTable) IndexRecord(db sqlite.Database, i interface{}) error {
-	return t.IndexFeature(db, i.(geojson.Feature))
+func (t *SPRTable) IndexRecord(ctx context.Context, db sqlite.Database, i interface{}) error {
+	return t.IndexFeature(ctx, db, i.([]byte))
 }
 
-func (t *SPRTable) IndexFeature(db sqlite.Database, f geojson.Feature) error {
+func (t *SPRTable) IndexFeature(ctx context.Context, db sqlite.Database, f []byte) error {
 
-	is_alt := whosonfirst.IsAlt(f)
-	alt_label := whosonfirst.AltLabel(f)
+	is_alt := alt.IsAlt(f)
 
 	if is_alt {
 
 		if !t.options.IndexAltFiles {
 			return nil
 		}
-
-		if alt_label == "" {
-			return errors.New("Missing wof:alt_label property")
-		}
 	}
 
-	spr, err := f.SPR()
+	alt_label, err := properties.AltLabel(f)
 
 	if err != nil {
-		return err
+		return MissingPropertyError(t, "alt label", err)
+	}
+
+	var s spr.StandardPlacesResult
+
+	if is_alt {
+
+		_s, err := spr.WhosOnFirstAltSPR(f)
+
+		if err != nil {
+			return WrapError(t, fmt.Errorf("Failed to generate SPR for alt geom, %w", err))
+		}
+
+		s = _s
+
+	} else {
+
+		_s, err := spr.WhosOnFirstSPR(f)
+
+		if err != nil {
+			return WrapError(t, fmt.Errorf("Failed to SPR, %w", err))
+		}
+
+		s = _s
+
 	}
 
 	sql := fmt.Sprintf(`INSERT OR REPLACE INTO %s (
 		id, parent_id, name, placetype,
+		inception, cessation,
 		country, repo,
 		latitude, longitude,
 		min_latitude, min_longitude,
 		max_latitude, max_longitude,
 		is_current, is_deprecated, is_ceased,
 		is_superseded, is_superseding,
-		superseded_by, supersedes,
+		superseded_by, supersedes, belongsto,
 		is_alt, alt_label,
 		lastmodified
 		) VALUES (
@@ -203,42 +203,62 @@ func (t *SPRTable) IndexFeature(db sqlite.Database, f geojson.Feature) error {
 		?, ?,
 		?, ?,
 		?, ?,
-		?, ?, ?,
 		?, ?,
+		?, ?, ?,
+		?, ?, ?,
 		?, ?,
 		?, ?,
 		?
 		)`, t.Name()) // ON CONFLICT DO BLAH BLAH BLAH
 
+	superseded_by := int64ToString(s.SupersededBy())
+	supersedes := int64ToString(s.Supersedes())
+	belongs_to := int64ToString(s.BelongsTo())
+
+	str_inception := ""
+	str_cessation := ""
+
+	inception := s.Inception()
+	cessation := s.Cessation()
+
+	if inception != nil {
+		str_inception = inception.String()
+	}
+
+	if cessation != nil {
+		str_cessation = cessation.String()
+	}
+
 	args := []interface{}{
-		spr.Id(), spr.ParentId(), spr.Name(), spr.Placetype(),
-		spr.Country(), spr.Repo(),
-		spr.Latitude(), spr.Longitude(),
-		spr.MinLatitude(), spr.MinLongitude(),
-		spr.MaxLatitude(), spr.MaxLongitude(),
-		spr.IsCurrent().Flag(), spr.IsDeprecated().Flag(), spr.IsCeased().Flag(),
-		spr.IsSuperseded().Flag(), spr.IsSuperseding().Flag(),
-		"", "",
+		s.Id(), s.ParentId(), s.Name(), s.Placetype(),
+		str_inception, str_cessation,
+		s.Country(), s.Repo(),
+		s.Latitude(), s.Longitude(),
+		s.MinLatitude(), s.MinLongitude(),
+		s.MaxLatitude(), s.MaxLongitude(),
+		s.IsCurrent().Flag(), s.IsDeprecated().Flag(), s.IsCeased().Flag(),
+		s.IsSuperseded().Flag(), s.IsSuperseding().Flag(),
+		superseded_by, supersedes, belongs_to,
 		is_alt, alt_label,
-		spr.LastModified(),
+		s.LastModified(),
 	}
 
 	conn, err := db.Conn()
 
 	if err != nil {
-		return err
+		return DatabaseConnectionError(t, err)
 	}
 
 	tx, err := conn.Begin()
 
 	if err != nil {
-		return err
+		return BeginTransactionError(t, err)
 	}
 
 	stmt, err := tx.Prepare(sql)
 
 	if err != nil {
-		return err
+		return PrepareStatementError(t, err)
 	}
 
 	defer stmt.Close()
@@ -246,8 +266,25 @@ func (t *SPRTable) IndexFeature(db sqlite.Database, f geojson.Feature) error {
 	_, err = stmt.Exec(args...)
 
 	if err != nil {
-		return err
+		return ExecuteStatementError(t, err)
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+
+	if err != nil {
+		return CommitTransactionError(t, err)
+	}
+
+	return nil
+}
+
+func int64ToString(ints []int64) string {
+
+	str_ints := make([]string, len(ints))
+
+	for idx, i := range ints {
+		str_ints[idx] = strconv.FormatInt(i, 10)
+	}
+
+	return strings.Join(str_ints, ",")
 }

@@ -3,15 +3,15 @@ package tables
 // https://www.sqlite.org/rtree.html
 
 import (
-	"encoding/json"
-	"errors"
+	"context"
 	"fmt"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2/properties/geometry"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2/properties/whosonfirst"
-	"github.com/whosonfirst/go-whosonfirst-sqlite"
+	"github.com/aaronland/go-sqlite"
+	"github.com/paulmach/orb"
+	"github.com/paulmach/orb/encoding/wkt"
+	"github.com/whosonfirst/go-whosonfirst-feature/alt"
+	"github.com/whosonfirst/go-whosonfirst-feature/geometry"
+	"github.com/whosonfirst/go-whosonfirst-feature/properties"
 	"github.com/whosonfirst/go-whosonfirst-sqlite-features"
-	"github.com/whosonfirst/go-whosonfirst-sqlite/utils"
 	_ "log"
 )
 
@@ -34,7 +34,7 @@ type RTreeTable struct {
 	options *RTreeTableOptions
 }
 
-func NewRTreeTable() (sqlite.Table, error) {
+func NewRTreeTable(ctx context.Context) (sqlite.Table, error) {
 
 	opts, err := DefaultRTreeTableOptions()
 
@@ -42,10 +42,10 @@ func NewRTreeTable() (sqlite.Table, error) {
 		return nil, err
 	}
 
-	return NewRTreeTableWithOptions(opts)
+	return NewRTreeTableWithOptions(ctx, opts)
 }
 
-func NewRTreeTableWithOptions(opts *RTreeTableOptions) (sqlite.Table, error) {
+func NewRTreeTableWithOptions(ctx context.Context, opts *RTreeTableOptions) (sqlite.Table, error) {
 
 	t := RTreeTable{
 		name:    "rtree",
@@ -55,7 +55,7 @@ func NewRTreeTableWithOptions(opts *RTreeTableOptions) (sqlite.Table, error) {
 	return &t, nil
 }
 
-func NewRTreeTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
+func NewRTreeTableWithDatabase(ctx context.Context, db sqlite.Database) (sqlite.Table, error) {
 
 	opts, err := DefaultRTreeTableOptions()
 
@@ -63,18 +63,18 @@ func NewRTreeTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
 		return nil, err
 	}
 
-	return NewRTreeTableWithDatabaseAndOptions(db, opts)
+	return NewRTreeTableWithDatabaseAndOptions(ctx, db, opts)
 }
 
-func NewRTreeTableWithDatabaseAndOptions(db sqlite.Database, opts *RTreeTableOptions) (sqlite.Table, error) {
+func NewRTreeTableWithDatabaseAndOptions(ctx context.Context, db sqlite.Database, opts *RTreeTableOptions) (sqlite.Table, error) {
 
-	t, err := NewRTreeTableWithOptions(opts)
+	t, err := NewRTreeTableWithOptions(ctx, opts)
 
 	if err != nil {
 		return nil, err
 	}
 
-	err = t.InitializeTable(db)
+	err = t.InitializeTable(ctx, db)
 
 	if err != nil {
 		return nil, err
@@ -122,54 +122,69 @@ func (t *RTreeTable) Schema() string {
 	return fmt.Sprintf(sql, t.Name())
 }
 
-func (t *RTreeTable) InitializeTable(db sqlite.Database) error {
+func (t *RTreeTable) InitializeTable(ctx context.Context, db sqlite.Database) error {
 
-	return utils.CreateTableIfNecessary(db, t)
+	return sqlite.CreateTableIfNecessary(ctx, db, t)
 }
 
-func (t *RTreeTable) IndexRecord(db sqlite.Database, i interface{}) error {
-	return t.IndexFeature(db, i.(geojson.Feature))
+func (t *RTreeTable) IndexRecord(ctx context.Context, db sqlite.Database, i interface{}) error {
+	return t.IndexFeature(ctx, db, i.([]byte))
 }
 
-func (t *RTreeTable) IndexFeature(db sqlite.Database, f geojson.Feature) error {
+func (t *RTreeTable) IndexFeature(ctx context.Context, db sqlite.Database, f []byte) error {
 
-	switch geometry.Type(f) {
+	is_alt := alt.IsAlt(f) // this returns a boolean which is interpreted as a float by SQLite
+
+	if is_alt && !t.options.IndexAltFiles {
+		return nil
+	}
+
+	geom_type, err := geometry.Type(f)
+
+	if err != nil {
+		return MissingPropertyError(t, "geometry type", err)
+	}
+
+	switch geom_type {
 	case "Polygon", "MultiPolygon":
 		// pass
 	default:
 		return nil
 	}
 
-	conn, err := db.Conn()
+	wof_id, err := properties.Id(f)
 
 	if err != nil {
-		return err
-	}
-
-	wof_id := f.Id()
-	is_alt := whosonfirst.IsAlt(f) // this returns a boolean which is interpreted as a float by SQLite
-
-	if is_alt && !t.options.IndexAltFiles {
-		return nil
+		return MissingPropertyError(t, "id", err)
 	}
 
 	alt_label := ""
 
 	if is_alt {
 
-		alt_label = whosonfirst.AltLabel(f)
+		label, err := properties.AltLabel(f)
 
-		if alt_label == "" {
-			return errors.New("Missing src:alt_label property")
+		if err != nil {
+			return MissingPropertyError(t, "alt label", err)
 		}
+
+		alt_label = label
 	}
 
-	lastmod := whosonfirst.LastModified(f)
+	lastmod := properties.LastModified(f)
 
-	polygons, err := f.Polygons()
+	geojson_geom, err := geometry.Geometry(f)
 
 	if err != nil {
-		return err
+		return MissingPropertyError(t, "geometry", err)
+	}
+
+	orb_geom := geojson_geom.Geometry()
+
+	conn, err := db.Conn()
+
+	if err != nil {
+		return DatabaseConnectionError(t, err)
 	}
 
 	tx, err := conn.Begin()
@@ -187,58 +202,48 @@ func (t *RTreeTable) IndexFeature(db sqlite.Database, f geojson.Feature) error {
 	stmt, err := tx.Prepare(sql)
 
 	if err != nil {
-		return err
+		return PrepareStatementError(t, err)
 	}
 
 	defer stmt.Close()
 
-	// this should be updated to use go-whosonfirst-geojson-v2/geometry GeometryForFeature
-	// so that we're not translating between [][][]float64 and skleterjohn/geom things
-	// twice (20201214/thisisaaronland)
+	var mp orb.MultiPolygon
 
-	for _, poly := range polygons {
+	switch geom_type {
+	case "MultiPolygon":
+		mp = orb_geom.(orb.MultiPolygon)
+	case "Polygon":
+		mp = []orb.Polygon{orb_geom.(orb.Polygon)}
+	default:
+		// This should never happen (we check above) but just in case...
+		return WrapError(t, fmt.Errorf("Invalid or unsupported geometry type, %s", geom_type))
+	}
 
-		exterior_ring := poly.ExteriorRing()
-		bbox := exterior_ring.Bounds()
+	for _, poly := range mp {
+
+		// Store the geometry for each bounding box so we can use it to do
+		// raycasting and filter points in any interior rings. For example in
+		// whosonfirst/go-whosonfirst-spatial-sqlite
+
+		bbox := poly.Bound()
 
 		sw := bbox.Min
 		ne := bbox.Max
 
-		points := make([][][]float64, 0)
+		enc_geom := wkt.MarshalString(poly)
 
-		exterior_points := make([][]float64, 0)
-
-		for _, c := range exterior_ring.Vertices() {
-			pt := []float64{c.X, c.Y}
-			exterior_points = append(exterior_points, pt)
-		}
-
-		points = append(points, exterior_points)
-
-		for _, interior_ring := range poly.InteriorRings() {
-
-			interior_points := make([][]float64, 0)
-
-			for _, c := range interior_ring.Vertices() {
-				pt := []float64{c.X, c.Y}
-				interior_points = append(interior_points, pt)
-			}
-
-			points = append(points, interior_points)
-		}
-
-		points_enc, err := json.Marshal(points)
+		_, err = stmt.Exec(sw.X(), ne.X(), sw.Y(), ne.Y(), wof_id, is_alt, alt_label, enc_geom, lastmod)
 
 		if err != nil {
-			return err
-		}
-
-		_, err = stmt.Exec(sw.X, ne.X, sw.Y, ne.Y, wof_id, is_alt, alt_label, string(points_enc), lastmod)
-
-		if err != nil {
-			return err
+			return ExecuteStatementError(t, err)
 		}
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+
+	if err != nil {
+		return CommitTransactionError(t, err)
+	}
+
+	return nil
 }

@@ -1,12 +1,12 @@
 package tables
 
 import (
+	"context"
 	"fmt"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2"
-	"github.com/whosonfirst/go-whosonfirst-geojson-v2/properties/whosonfirst"
-	"github.com/whosonfirst/go-whosonfirst-sqlite"
+	"github.com/aaronland/go-sqlite"
+	"github.com/whosonfirst/go-whosonfirst-feature/alt"
+	"github.com/whosonfirst/go-whosonfirst-feature/properties"
 	"github.com/whosonfirst/go-whosonfirst-sqlite-features"
-	"github.com/whosonfirst/go-whosonfirst-sqlite/utils"
 	"strings"
 )
 
@@ -22,24 +22,24 @@ type AncestorsRow struct {
 	LastModified      int64
 }
 
-func NewAncestorsTableWithDatabase(db sqlite.Database) (sqlite.Table, error) {
+func NewAncestorsTableWithDatabase(ctx context.Context, db sqlite.Database) (sqlite.Table, error) {
 
-	t, err := NewAncestorsTable()
+	t, err := NewAncestorsTable(ctx)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to create ancestors table, %w", err)
 	}
 
-	err = t.InitializeTable(db)
+	err = t.InitializeTable(ctx, db)
 
 	if err != nil {
-		return nil, err
+		return nil, InitializeTableError(t, err)
 	}
 
 	return t, nil
 }
 
-func NewAncestorsTable() (sqlite.Table, error) {
+func NewAncestorsTable(ctx context.Context) (sqlite.Table, error) {
 
 	t := AncestorsTable{
 		name: "ancestors",
@@ -68,43 +68,45 @@ func (t *AncestorsTable) Schema() string {
 	return fmt.Sprintf(sql, t.Name(), t.Name(), t.Name(), t.Name())
 }
 
-func (t *AncestorsTable) InitializeTable(db sqlite.Database) error {
+func (t *AncestorsTable) InitializeTable(ctx context.Context, db sqlite.Database) error {
 
-	return utils.CreateTableIfNecessary(db, t)
+	return sqlite.CreateTableIfNecessary(ctx, db, t)
 }
 
-func (t *AncestorsTable) IndexRecord(db sqlite.Database, i interface{}) error {
-	return t.IndexFeature(db, i.(geojson.Feature))
+func (t *AncestorsTable) IndexRecord(ctx context.Context, db sqlite.Database, i interface{}) error {
+	return t.IndexFeature(ctx, db, i.([]byte))
 }
 
-func (t *AncestorsTable) IndexFeature(db sqlite.Database, f geojson.Feature) error {
+func (t *AncestorsTable) IndexFeature(ctx context.Context, db sqlite.Database, f []byte) error {
 
-	is_alt := whosonfirst.IsAlt(f)
-
-	if is_alt {
+	if alt.IsAlt(f) {
 		return nil
+	}
+
+	id, err := properties.Id(f)
+
+	if err != nil {
+		return MissingPropertyError(t, "id", err)
 	}
 
 	conn, err := db.Conn()
 
 	if err != nil {
-		return err
+		return DatabaseConnectionError(t, err)
 	}
 
 	tx, err := conn.Begin()
 
 	if err != nil {
-		return err
+		return BeginTransactionError(t, err)
 	}
-
-	id := f.Id()
 
 	sql := fmt.Sprintf(`DELETE FROM %s WHERE id = ?`, t.Name())
 
 	stmt, err := tx.Prepare(sql)
 
 	if err != nil {
-		return err
+		return PrepareStatementError(t, err)
 	}
 
 	defer stmt.Close()
@@ -112,13 +114,11 @@ func (t *AncestorsTable) IndexFeature(db sqlite.Database, f geojson.Feature) err
 	_, err = stmt.Exec(id)
 
 	if err != nil {
-		return err
+		return ExecuteStatementError(t, err)
 	}
 
-	str_id := f.Id()
-
-	hierarchies := whosonfirst.Hierarchies(f)
-	lastmod := whosonfirst.LastModified(f)
+	hierarchies := properties.Hierarchies(f)
+	lastmod := properties.LastModified(f)
 
 	for _, h := range hierarchies {
 
@@ -135,20 +135,26 @@ func (t *AncestorsTable) IndexFeature(db sqlite.Database, f geojson.Feature) err
 			stmt, err := tx.Prepare(sql)
 
 			if err != nil {
-				return err
+				return PrepareStatementError(t, err)
 			}
 
 			defer stmt.Close()
 
-			_, err = stmt.Exec(str_id, ancestor_id, ancestor_placetype, lastmod)
+			_, err = stmt.Exec(id, ancestor_id, ancestor_placetype, lastmod)
 
 			if err != nil {
-				return err
+				return ExecuteStatementError(t, err)
 			}
 
 		}
 
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+
+	if err != nil {
+		return CommitTransactionError(t, err)
+	}
+
+	return nil
 }

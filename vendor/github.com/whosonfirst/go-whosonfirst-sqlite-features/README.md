@@ -1,16 +1,14 @@
 # go-whosonfirst-sqlite-features
 
-Go package for working with Who's On First features and SQLite databases.
+Go package for implementing the `aaronland/go-sqlite.Table` interface used to index Who's On First Feature records in one or more SQLite database tables.
 
-## Install
+This package only defines packages that implement the `aaronland/go-sqlite.Table` interface and does not do any actual database table indexing. That is handled by the `whosonfirst/go-whosonfirst-sqlite-feature-index` package.
 
-You will need to have both `Go` (specifically version [Go 1.12](https://golang.org/dl/) or higher) and the `make` programs installed on your computer. Assuming you do just type:
+## Documentation
 
-```
-make tools
-```
+[![Go Reference](https://pkg.go.dev/badge/github.com/whosonfirst/go-whosonfirst-sqlite-features.svg)](https://pkg.go.dev/github.com/whosonfirst/go-whosonfirst-sqlite-features)
 
-All of this package's dependencies are bundled with the code in the `vendor` directory.
+Documentation is incomplete at this time.
 
 ## Tables
 
@@ -234,6 +232,19 @@ CREATE INDEX spr_by_superseding ON spr (is_superseding, lastmodified);
 CREATE INDEX spr_obsolete ON spr (is_deprecated, is_superseded);
 ```
 
+### supersedes
+
+```
+CREATE TABLE %s (
+	id INTEGER NOT NULL,
+	superseded_id INTEGER NOT NULL,
+	superseded_by_id INTEGER NOT NULL,
+	lastmodified INTEGER
+);
+
+CREATE UNIQUE INDEX supersedes_by ON %s (id,superseded_id, superseded_by_id);
+```
+
 ## Custom tables
 
 Sure. You just need to write a per-table package that implements the `Table` interface as described in [go-whosonfirst-sqlite](https://github.com/whosonfirst/go-whosonfirst-sqlite#custom-tables).
@@ -245,6 +256,9 @@ These are documented in the [Dependencies and relationships section](https://git
 ## See also
 
 * https://sqlite.org/
-* https://www.gaia-gis.it/fossil/libspatialite/index
-* https://github.com/whosonfirst/go-whosonfirst-sqlite
+
+# See also
+
+* https://github.com/aaronland/go-sqlite
+* https://github.com/whosonfirst/go-whosonfirst-sqlite-index
 * https://github.com/whosonfirst/go-whosonfirst-sqlite-feature-index
